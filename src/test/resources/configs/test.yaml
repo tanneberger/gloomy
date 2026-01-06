@@ -1,0 +1,24 @@
+  interface_definitions:
+    - interface: delayed_adder
+      parent: ./template_interface:axis
+      signals:
+        - name: clock
+          direction: input
+          width: 1
+        - name: value_1
+          direction: input
+          width: 32
+        - name: value_2
+          direction: input
+          width: 32
+        - name: out
+          direction: output
+          width: 32
+  entities:
+    - entity: delayed_adder
+      verilog_source: "src/test/resources/verilog/delayed_adder.v"
+      interfaces: [ "delayed_adder" ]
+      signals: []
+        #- name: status
+        #  width: 32
+        #  direction: output
