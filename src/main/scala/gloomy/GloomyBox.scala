@@ -3,6 +3,7 @@ package gloomy
 import chisel3._
 import chisel3.util._
 import cats.syntax.either._
+import gloomy.Signal.toChiselData
 import io.circe.yaml
 import io.circe.generic.auto._
 import io.circe.{Error, yaml}
@@ -96,10 +97,10 @@ object Signal {
 }
 
 
-class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[String, Data]) extends Record {
+class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[String, Data], val clock: chisel3.Clock) extends Record {
   override def elements: SeqMap[String, Data] = SeqMap.from(input_elements ++ output_elements)
   val inputs_with_out_clock: SeqMap[String, Data] = SeqMap.from(input_elements.filter(pair => pair._1 != "clock" ))
-  val clock: chisel3.Clock = input_elements.getOrElse("clock",input_elements.get("clk").orNull).asInstanceOf[chisel3.Clock]
+  //val clock: chisel3.Clock = input_elements.getOrElse("clock",input_elements.get("clk").orNull).asInstanceOf[chisel3.Clock]
   val outputs: SeqMap[String, Data] = SeqMap.from(output_elements)
 
   def getInputs: List[(String, Data)] = input_elements.toList
@@ -107,6 +108,39 @@ class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[Strin
 
   def access(key: String): Data = {
     elements(key)
+  }
+}
+
+object GloomyBundle {
+  def createFromChisel(io: Bundle): GloomyBundle = {
+    var inputs: Map[String, chisel3.Data] = Map()
+    var outputs: Map[String, chisel3.Data] = Map()
+    io.elements.foreach(value => {
+      val signal = Signal.fromChiselData(value._1, value._2)
+      signal.direction match {
+        case Input() => {inputs += (signal.name -> value._2)}
+        case Output() => {outputs += (signal.name -> value._2)}
+      }
+    })
+
+    val clock = findClock(inputs.values.toList)
+
+    if (clock.isEmpty) {
+      throw new RuntimeException("no Clock in Bundle")
+    }
+
+    new GloomyBundle(input_elements = inputs, output_elements = outputs, clock = clock.get.asInstanceOf[chisel3.Clock])
+  }
+
+  def findClock(signals: List[Data]): Option[Data] = {
+    println(signals.length)
+    signals.foreach(value => {
+      println(value.typeName, value.isInstanceOf[chisel3.Clock])
+      if (value.isInstanceOf[chisel3.Clock]) {
+         return Some(value)
+      }
+    })
+    return None
   }
 }
 
@@ -133,7 +167,13 @@ class GloomyInterface(val input_signals: List[Signal], val output_signals: List[
   def toChiselBundle: GloomyBundle = {
     val chisel_input_signals: Map[String, Data] = input_signals.map(x => {x.name -> Signal.toChiselData(x)}).toMap
     val chisel_output_signals: Map[String, Data] = output_signals.map(x => {x.name -> Signal.toChiselData(x)}).toMap
-    new GloomyBundle(chisel_input_signals, chisel_output_signals)
+
+    println(chisel_output_signals.size, chisel_input_signals.size)
+    val clock = GloomyBundle.findClock(chisel_input_signals.values.toList)
+    if (clock.isEmpty) {
+      throw new RuntimeException("No clock inside GloomyInterface")
+    }
+    new GloomyBundle(chisel_input_signals, chisel_output_signals, clock = clock.get.asInstanceOf[chisel3.Clock])
   }
 }
 
@@ -184,7 +224,6 @@ object GloomyVerilogBox {
     }
 
     val file_content = scala.io.Source.fromFile(verilog_file).mkString
-
     if (!file_content.contains("module " + module_name)) {
       throw new Exception("cannot find module inside verilog file")
     };
@@ -192,35 +231,39 @@ object GloomyVerilogBox {
     val modules = file_content.split("module");
 
     for (module <- modules) {
-      if (module.contains(module_name)) {
+      if (module.startsWith(" " + module_name)) {
         var temp = module.split("""\(""");
         val body = temp.apply(1);
         temp = temp.apply(1).split("""\)""");
 
         val statements = body.split(";");
-        val keyValPattern: Regex = """(input|output|reg)(\[([0-9]+):([0-9]+)\])?\s([0-9a-zA-Z-_]+)""".r
+        val keyValPattern: Regex = """(input|output|reg)(\s*)((wire)?)(\s*)(\[([0-9]+):([0-9]+)\])?\s([0-9a-zA-Z-_]+)""".r
         var input_signals: List[Signal] = List()
         var output_signals: List[Signal] = List()
 
         for (statement <- statements) {
           val port  = statement.replaceAll("\n", " ").trim;
-          for (patternMatch <- keyValPattern.findAllMatchIn(port)) {
 
-            if (patternMatch.group(1) != "reg") {
-              val chisel_type = if (patternMatch.group(5) == "clock" || patternMatch.group(5) == "clk") {
+          println("port", port)
+          for (patternMatch <- keyValPattern.findAllMatchIn(port)) {
+            for (i <- 0 to 9) {
+              println(i, patternMatch.group(i))
+            }
+            if (patternMatch.group(1) != "reg" && patternMatch.group(1) != "wire") {
+              val chisel_type = if (patternMatch.group(9).contains("clock") || patternMatch.group(9).contains("clk")) {
                 "clock"
               } else {
                 "unsigned"
               };
 
-              val signal = if (patternMatch.group(2) != null) {
-                Signal(name=patternMatch.group(5), direction = Direction.fromString(patternMatch.group(1)), width = 1 + patternMatch.group(3).toInt - patternMatch.group(4).toInt, chisel_type = ChiselType.fromString(chisel_type))
+              val signal = if (patternMatch.group(6) != null) {
+                Signal(name=patternMatch.group(9), direction = Direction.fromString(patternMatch.group(1)), width = 1 + patternMatch.group(7).toInt - patternMatch.group(8).toInt, chisel_type = ChiselType.fromString(chisel_type))
               } else {
-                Signal(name=patternMatch.group(5), direction = Direction.fromString(patternMatch.group(1)), width = 1, chisel_type = ChiselType.fromString(chisel_type))
+                Signal(name=patternMatch.group(9), direction = Direction.fromString(patternMatch.group(1)), width = 1, chisel_type = ChiselType.fromString(chisel_type))
               }
 
               signal.direction match {
-                case Input() => input_signals = input_signals.:: (signal)
+                case Input() => input_signals = input_signals.::(signal)
                 case Output() => output_signals = output_signals.::(signal)
               }
             }
