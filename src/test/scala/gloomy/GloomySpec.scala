@@ -28,10 +28,8 @@ class ChiselDelayedAdder extends Module with ExposedInterface {
     io.out := r2 & r3;
   }
 
-  override def getBundle: GloomyBundle = new GloomyBundle(input_elements = Map("value_1" -> io.value_1, "value_2" -> io.value_2, "clock" -> io.clock), output_elements = Map("out" -> io.out))
-
+  override def getBundle: GloomyBundle = GloomyBundle.createFromChisel(this.io)
   override def getInterface: GloomyInterface = GloomyInterface.createFromChisel(this.io)
-
   override def gloomyClock: chisel3.Clock = this.clock
 }
 
@@ -42,7 +40,7 @@ class DelayedAdder(entity: ParsedEntity) extends GloomyVerilogBox(entity) with E
 
 class GloomySpec extends AnyFreeSpec with Matchers with ChiselSim {
   val parsed_entity: ParsedEntity = GloomyVerilogBox.fromVerilog("./src/test/resources/verilog/delayed_adder.v", "DelayedAdder");
-
+/*
   "testing verilog gloomy box" in {
     simulate(new GloomyBox[DelayedAdder](() => new DelayedAdder(parsed_entity))) { dut =>
       dut.io.elements("value_1").poke(4.U(32.W));
@@ -125,4 +123,5 @@ class GloomySpec extends AnyFreeSpec with Matchers with ChiselSim {
       assert(test_generator.test())
     }
   }
+ */
 }

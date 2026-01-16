@@ -1,8 +1,9 @@
 package gloomy
 
 import chisel3.simulator.PeekPokeAPI.{testableClock, testableData}
+
 import scala.util.Random
-import scala.math.pow
+import scala.math.{abs, pow}
 
 trait TestBench {
   def test(): Boolean;
@@ -12,24 +13,24 @@ class RandomTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, 
                                                                           gloomyBox: GloomyBox[V],
                                                                           tries: Int,
                                                                           initial_state: X,
-                                                                          validation: (Seq[BigInt], Seq[BigInt], X) => (Boolean, X)) extends TestBench {
+                                                                          validation: (Map[String, BigInt], Map[String, BigInt], X) => (Boolean, X)) extends TestBench {
   val signals: GloomyBundle = gloomyBox.io
 
   override def test(): Boolean = {
     val rand = new Random()
     var state: X = initial_state
     for (_ <- 0 until tries) {
-      var inputs: Seq[BigInt] = Seq()
+      var inputs: Map[String, BigInt] = Map()
       for (input_signal <- gloomyBox.io.inputs_with_out_clock) {
-        val value = rand.nextInt() % input_signal._2.getWidth
+        val value = abs(rand.nextInt()) % pow(2, input_signal._2.getWidth).toInt
         gloomyBox.io.access(input_signal._1).poke(value)
-        inputs = inputs :+ value
+        inputs += input_signal._1 -> value
       }
       gloomyBox.io.clock.step(1)
 
-      var outputs: Seq[BigInt] = Seq()
+      var outputs: Map[String, BigInt] = Map()
       for (output_signal <- gloomyBox.io.outputs) {
-        outputs = outputs :+ output_signal._2.peekValue().asBigInt
+        outputs += output_signal._1 -> output_signal._2.peekValue().asBigInt
       }
       val lambda = validation(inputs, outputs, state)
       state = lambda._2
@@ -46,26 +47,26 @@ class RandomTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, 
 class CompleteTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
                                                                              gloomyBox: GloomyBox[V],
                                                                              initial_state: X,
-                                                                             validation: (Seq[BigInt], Seq[BigInt], X) => (Boolean, X)) extends TestBench {
+                                                                             validation: (Map[String, BigInt], Map[String, BigInt], X) => (Boolean, X)) extends TestBench {
   val signals: GloomyBundle = gloomyBox.io
 
   override def test(): Boolean = {
     var state: X = initial_state;
     val total_width = gloomyBox.io.inputs_with_out_clock.foldLeft(0)((a, b) => a + b._2.getWidth)
     for (i <- 0 until pow(2, total_width).toInt) {
-      var inputs: Seq[BigInt] = Seq()
+      var inputs: Map[String, BigInt] = Map()
       var current_index: Int = 0
       for (input_signal <- gloomyBox.io.inputs_with_out_clock) {
         val value = (i >> current_index) % pow(2, input_signal._2.getWidth).toInt
         gloomyBox.io.access(input_signal._1).poke(value)
-        inputs = inputs :+ value
+        inputs += input_signal._1 -> value
         current_index = current_index + input_signal._2.getWidth
       }
       gloomyBox.io.clock.step(1)
 
-      var outputs: Seq[BigInt] = Seq()
+      var outputs: Map[String, BigInt] = Map()
       for (output_signal <- gloomyBox.io.outputs) {
-        outputs = outputs :+ output_signal._2.peekValue().asBigInt
+        outputs += output_signal._1 -> output_signal._2.peekValue().asBigInt
       }
       val lambda = validation(inputs, outputs, state);
       state = lambda._2;

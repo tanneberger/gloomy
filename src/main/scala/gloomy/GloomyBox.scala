@@ -133,9 +133,7 @@ object GloomyBundle {
   }
 
   def findClock(signals: List[Data]): Option[Data] = {
-    println(signals.length)
     signals.foreach(value => {
-      println(value.typeName, value.isInstanceOf[chisel3.Clock])
       if (value.isInstanceOf[chisel3.Clock]) {
          return Some(value)
       }
@@ -168,7 +166,6 @@ class GloomyInterface(val input_signals: List[Signal], val output_signals: List[
     val chisel_input_signals: Map[String, Data] = input_signals.map(x => {x.name -> Signal.toChiselData(x)}).toMap
     val chisel_output_signals: Map[String, Data] = output_signals.map(x => {x.name -> Signal.toChiselData(x)}).toMap
 
-    println(chisel_output_signals.size, chisel_input_signals.size)
     val clock = GloomyBundle.findClock(chisel_input_signals.values.toList)
     if (clock.isEmpty) {
       throw new RuntimeException("No clock inside GloomyInterface")
@@ -237,18 +234,14 @@ object GloomyVerilogBox {
         temp = temp.apply(1).split("""\)""");
 
         val statements = body.split(";");
-        val keyValPattern: Regex = """(input|output|reg)(\s*)((wire)?)(\s*)(\[([0-9]+):([0-9]+)\])?\s([0-9a-zA-Z-_]+)""".r
+        val keyValPattern: Regex = """(input|output)(\s*)((reg|wire)?)(\s*)(\[([0-9]+):([0-9]+)\])?\s([0-9a-zA-Z-_]+)""".r
         var input_signals: List[Signal] = List()
         var output_signals: List[Signal] = List()
 
         for (statement <- statements) {
           val port  = statement.replaceAll("\n", " ").trim;
 
-          println("port", port)
           for (patternMatch <- keyValPattern.findAllMatchIn(port)) {
-            for (i <- 0 to 9) {
-              println(i, patternMatch.group(i))
-            }
             if (patternMatch.group(1) != "reg" && patternMatch.group(1) != "wire") {
               val chisel_type = if (patternMatch.group(9).contains("clock") || patternMatch.group(9).contains("clk")) {
                 "clock"
