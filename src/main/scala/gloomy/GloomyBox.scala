@@ -10,6 +10,7 @@ import io.circe.{Error, yaml}
 
 import java.nio.file.{Files, Paths}
 import scala.collection.immutable.SeqMap
+import scala.reflect.ClassTag
 import scala.util.matching.Regex
 
 
@@ -58,8 +59,12 @@ object Direction {
     }
   }
 }
-case class Input() extends Direction {}
-case class Output() extends Direction {}
+case class Input() extends Direction {
+  override def toString: String = "input"
+}
+case class Output() extends Direction {
+  override def toString: String = "output"
+}
 
 
 class Signal(val name: String, val chisel_type: ChiselType, val width: Int, val direction: Direction)
@@ -97,7 +102,7 @@ object Signal {
 }
 
 
-class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[String, Data], val clock: chisel3.Clock) extends Record {
+class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[String, Data], val input_clock: Option[chisel3.Clock]) extends Record {
   override def elements: SeqMap[String, Data] = SeqMap.from(input_elements ++ output_elements)
   val inputs_with_out_clock: SeqMap[String, Data] = SeqMap.from(input_elements.filter(pair => pair._1 != "clock" ))
   //val clock: chisel3.Clock = input_elements.getOrElse("clock",input_elements.get("clk").orNull).asInstanceOf[chisel3.Clock]
@@ -109,6 +114,7 @@ class GloomyBundle(input_elements: Map[String, Data], output_elements: Map[Strin
   def access(key: String): Data = {
     elements(key)
   }
+  def clock = input_clock.get
 }
 
 object GloomyBundle {
@@ -126,10 +132,11 @@ object GloomyBundle {
     val clock = findClock(inputs.values.toList)
 
     if (clock.isEmpty) {
-      throw new RuntimeException("no Clock in Bundle")
+      new GloomyBundle(input_elements = inputs, output_elements = outputs, input_clock = None)
+    } else {
+      new GloomyBundle(input_elements = inputs, output_elements = outputs, input_clock = Some(clock.get.asInstanceOf[chisel3.Clock]))
     }
 
-    new GloomyBundle(input_elements = inputs, output_elements = outputs, clock = clock.get.asInstanceOf[chisel3.Clock])
   }
 
   def findClock(signals: List[Data]): Option[Data] = {
@@ -168,9 +175,24 @@ class GloomyInterface(val input_signals: List[Signal], val output_signals: List[
 
     val clock = GloomyBundle.findClock(chisel_input_signals.values.toList)
     if (clock.isEmpty) {
-      throw new RuntimeException("No clock inside GloomyInterface")
+      new GloomyBundle(chisel_input_signals, chisel_output_signals, input_clock = None)
+    } else {
+      new GloomyBundle(chisel_input_signals, chisel_output_signals, input_clock = Some(clock.get.asInstanceOf[chisel3.Clock]))
     }
-    new GloomyBundle(chisel_input_signals, chisel_output_signals, clock = clock.get.asInstanceOf[chisel3.Clock])
+  }
+
+  val input_signals_without_clock : List[Signal] = List.from(input_signals.filter(pair => pair.name != "clock" ))
+  def invert(): GloomyInterface = {
+    val outputs = input_signals.map(it => new Signal(name = it.name, width = it.width, chisel_type = it.chisel_type, direction = it.direction match {
+      case Output() => Input()
+      case Input() => Output()
+    }))
+    val inputs = output_signals.map(it => new Signal(name = it.name, width = it.width, chisel_type = it.chisel_type, direction = it.direction match {
+      case Output() => Input()
+      case Input() => Output()
+    }))
+
+    new GloomyInterface(input_signals = inputs, output_signals = outputs)
   }
 }
 
@@ -184,7 +206,7 @@ class GloomyVerilogBox(entity: ParsedEntity) extends BlackBox with HasBlackBoxIn
 }
 
 class GloomyBox[V <: chisel3.experimental.BaseModule with ExposedInterface](constructor: () => V) extends Module {
-  private val module: V = Module(constructor.apply())
+  val module: V = Module(constructor.apply())
   val io: GloomyBundle = IO(module.getInterface.toChiselBundle)
 
   for {signal <- module.getBundle.getInputs} {
@@ -194,7 +216,15 @@ class GloomyBox[V <: chisel3.experimental.BaseModule with ExposedInterface](cons
   for {signal <- module.getBundle.getOutput} {
     io.access(signal._1)  := signal._2
   }
-  module.gloomyClock := this.io.clock
+
+  if (module.isInstanceOf[GloomyVerilogBox]) {
+    println("is Verilog")
+    module.getBundle.clock := this.io.clock;
+    //module.gloomyClock := this.io.clock
+  } else {
+    println("is Chisel")
+    module.gloomyClock := this.clock
+  }
 }
 
 

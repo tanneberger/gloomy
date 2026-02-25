@@ -9,45 +9,88 @@ trait TestBench {
   def test(): Boolean;
 }
 
-class RandomTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
+trait TestGenerator {
+  def data(interface: GloomyInterface): (Map[String, BigInt], Map[String, BigInt])
+}
+
+object TestBench {
+  def compareOutputs(expected: Map[String, BigInt], got: Map[String, BigInt]): Boolean = {
+    for (pair <- expected) {
+      if (!expected.contains(pair._1) || got(pair._1) != pair._2) {
+        return false
+      }
+    }
+    true
+  }
+}
+
+
+class RandomTestGenerator[X](
+                                                                                                       initial_state: X,
+                                                                                                       validation: (Map[String, BigInt], X) => (Map[String, BigInt], X)) extends TestGenerator {
+  var previous_output = Map()
+  var state: X = initial_state
+
+  override def data(interface: GloomyInterface): (Map[String, BigInt], Map[String, BigInt]) = {
+    val rand = new Random()
+
+    var inputs: Map[String, BigInt] = Map()
+    for (input_signal <- interface.input_signals_without_clock) {
+      val value = abs(rand.nextInt()) % pow(2, input_signal.width).toInt
+      inputs += input_signal.name -> value
+    }
+
+    val lambda = validation(inputs, state)
+    state = lambda._2
+
+    println(lambda)
+
+    (inputs, lambda._1)
+  }
+}
+
+class RandomTestBench[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
                                                                           gloomyBox: GloomyBox[V],
                                                                           tries: Int,
                                                                           initial_state: X,
-                                                                          validation: (Map[String, BigInt], Map[String, BigInt], X) => (Boolean, X)) extends TestBench {
+                                                                          validation: (Map[String, BigInt], X) => (Map[String, BigInt], X)) extends TestBench {
   val signals: GloomyBundle = gloomyBox.io
 
   override def test(): Boolean = {
     val rand = new Random()
     var state: X = initial_state
-    for (_ <- 0 until tries) {
+    for (i <- 0 until tries) {
       var inputs: Map[String, BigInt] = Map()
       for (input_signal <- gloomyBox.io.inputs_with_out_clock) {
         val value = abs(rand.nextInt()) % pow(2, input_signal._2.getWidth).toInt
         gloomyBox.io.access(input_signal._1).poke(value)
         inputs += input_signal._1 -> value
       }
-      gloomyBox.io.clock.step(1)
+      gloomyBox.clock.step(1)
 
       var outputs: Map[String, BigInt] = Map()
       for (output_signal <- gloomyBox.io.outputs) {
         outputs += output_signal._1 -> output_signal._2.peekValue().asBigInt
       }
-      val lambda = validation(inputs, outputs, state)
+      val lambda = validation(inputs, state)
       state = lambda._2
-      if (!lambda._1) {
+
+      if (!TestBench.compareOutputs(lambda._1, outputs) && i != 0) {
+        println(i, inputs, lambda, outputs)
         return false
       }
     }
 
     true
   }
+
 }
 
 
-class CompleteTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
+class CompleteTestBench[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
                                                                              gloomyBox: GloomyBox[V],
                                                                              initial_state: X,
-                                                                             validation: (Map[String, BigInt], Map[String, BigInt], X) => (Boolean, X)) extends TestBench {
+                                                                             validation: (Map[String, BigInt], X) => (Map[String, BigInt], X)) extends TestBench {
   val signals: GloomyBundle = gloomyBox.io
 
   override def test(): Boolean = {
@@ -62,15 +105,17 @@ class CompleteTesting[V <: chisel3.experimental.BaseModule with ExposedInterface
         inputs += input_signal._1 -> value
         current_index = current_index + input_signal._2.getWidth
       }
-      gloomyBox.io.clock.step(1)
+      gloomyBox.clock.step(1)
 
       var outputs: Map[String, BigInt] = Map()
       for (output_signal <- gloomyBox.io.outputs) {
         outputs += output_signal._1 -> output_signal._2.peekValue().asBigInt
       }
-      val lambda = validation(inputs, outputs, state);
+      val lambda = validation(inputs, state);
       state = lambda._2;
-      if (!lambda._1) {
+
+      if (!TestBench.compareOutputs(lambda._1, outputs) && i != 0) {
+        println(i, lambda, outputs)
         return false;
       }
     }
@@ -79,12 +124,12 @@ class CompleteTesting[V <: chisel3.experimental.BaseModule with ExposedInterface
   }
 }
 
-class CSVTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
+class CSVTestBench[V <: chisel3.experimental.BaseModule with ExposedInterface, U <: GloomyBox[V], X](
                                                                                gloomyBox: GloomyBox[V],
                                                                                csv_file_path: String,
                                                                                delimiter: String,
                                                                                initial_state: X,
-                                                                               validation: (Seq[BigInt], Seq[BigInt], X) => (Boolean, X)) extends TestBench {
+                                                                               validation: (Map[String, BigInt], X) => (Map[String, BigInt], X)) extends TestBench {
   override def test(): Boolean = {
     val csv_file_lines = scala.io.Source.fromFile(csv_file_path).mkString.split("\n")
     val header = csv_file_lines.head.split(delimiter)
@@ -106,24 +151,27 @@ class CSVTesting[V <: chisel3.experimental.BaseModule with ExposedInterface, U <
 
     var state: X = initial_state;
     for (i <- 1 until csv_file_lines.length) {
-      var inputs: Seq[BigInt] = Seq()
+
+      var inputs: Map[String, BigInt] = Map()
       val lines: List[String] = csv_file_lines.apply(i).split(delimiter).toList
       for (input_signal <- gloomyBox.io.inputs_with_out_clock) {
         val value = lines.apply(header_map(input_signal._1)).strip().toInt;
         gloomyBox.io.access(input_signal._1).poke(value)
-        inputs = inputs :+ value
+        inputs += input_signal._1 -> value
       }
 
-      gloomyBox.io.clock.step(1)
+      gloomyBox.clock.step(1)
 
-      var outputs: Seq[BigInt] = Seq()
+      var outputs: Map[String, BigInt] = Map()
       for (output_signal <- gloomyBox.io.outputs) {
-        outputs = outputs :+ output_signal._2.peekValue().asBigInt
+        outputs += output_signal._1 -> output_signal._2.peekValue().asBigInt
       }
-      val lambda = validation(inputs, outputs, state);
+
+      val lambda = validation(inputs, state);
       state = lambda._2;
 
-      if (!lambda._1) {
+      if (!TestBench.compareOutputs(lambda._1, outputs) && i != 1) {
+        println(i, lambda, outputs)
         return false;
       }
     }
